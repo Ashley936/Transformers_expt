@@ -277,8 +277,8 @@ def build_transformer(src_vocab_size: int, tgt_vocab_size: int, src_seq_len: int
     projection_layer=ProjectionLayer(d_model, tgt_vocab_size)
 
     # Initialize encoder and decoder
-    encoder=Encoder(encoder_layers)
-    decoder=Decoder(decoder_layers)
+    encoder=Encoder(nn.ModuleList(encoder_layers))
+    decoder=Decoder(nn.ModuleList(decoder_layers))
 
     # Initialize transformer
     transformer=Transformer(encoder, decoder, src_emb, tgt_emb, src_pos_emb, tgt_pos_emb, projection_layer)

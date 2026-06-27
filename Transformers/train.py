@@ -78,10 +78,10 @@ def train(config):
     device=torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print("Using device: ", device)
 
-    Path(config['model_folder']).mkdir(parents=True, exist_ok=True)
+    Path(f"{config['datasource']}_{config['model_folder']}").mkdir(parents=True, exist_ok=True)
 
     train_dataloader, val_dataloader, tokenizer_src, tokenizer_tgt=get_ds(config)
-    model=get_model(config, tokenizer_src.get_vocab_size(), tokenizer_tgt.get_vocab_size())
+    model=get_model(config, tokenizer_src.get_vocab_size(), tokenizer_tgt.get_vocab_size()).to(device)
 
     # Create Tensorboard
     writer=SummaryWriter(config['experiment_name'])
@@ -96,7 +96,10 @@ def train(config):
     if config['preload']:
         model_path=get_weights_file_path(config, config['preload']) 
         print(f'Loading pretrained model from path {model_path}')
-        state=torch.load(model_path) # BY DEFAULT LOADS MODEL ON GPU
+        state=torch.load(model_path, map_location=device) # BY DEFAULT LOADS MODEL ON GPU
+
+        # load model weights 
+        model.load_state_dict(state['model_state_dict'])
         initial_epoch=state['epoch']+1
         optimizer.load_state_dict(state['optimizer_state_dict'])
         global_step=state['global_step']
@@ -112,14 +115,15 @@ def train(config):
 
         for batch in batch_iterator:
             '''batch -> enc_input, dec_input, label, enc_mask, dec_mask, src_txt, tgt_txt'''
+            print("For batch using ", device)
             encoder_input = batch['enc_input'].to(device) # (B, seq_len)
             decoder_input = batch['dec_input'].to(device) # (B, seq_len)
             encoder_mask = batch['enc_mask'].to(device) # (B, 1, 1, seq_len)
             decoder_mask = batch['dec_mask'].to(device) # (B, 1, seq_len, seq_len)
 
             # Run the tensors through the transformer
-            ecoder_output=model.encode(encoder_input, encoder_mask) #(B, seq_len, d_model)
-            decoder_output=model.decode(decoder_input, ecoder_output, encoder_mask, decoder_mask) #(B, seq_len, d_model)
+            encoder_output=model.encode(encoder_input, encoder_mask) #(B, seq_len, d_model)
+            decoder_output=model.decode(decoder_input, encoder_output, encoder_mask, decoder_mask) #(B, seq_len, d_model)
             proj_out = model.project(decoder_output) # (B, seq_len, tgt_vocab_size)
 
             label = batch['label'].to(device) # (B, seq_len)

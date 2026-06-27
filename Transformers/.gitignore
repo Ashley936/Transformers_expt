@@ -2,3 +2,4 @@ __pycache__/
 uv.lock
 .venv/
 runs/
+opus_books_weights/
