@@ -32,6 +32,10 @@
 3. nn.Dropout -> creates droptout layer
 4. nn.Parameter -> Initialise traininable parameter
 5. nn.Linear -> &emsp;W.x + b (W is trainable weight matrix and b is bias)
+6. To compute M new tokens with a prompt length of N it will scale to $O(M \cdot (N+M)^2)$.  
+   That's why we introduce KV Cache, old states are stored, dropping the incremental token generation step cost to $O(1)$ calculations per token relative to history length.
+7. Storing the [B, H, S, S] attention matrix scores for the backward pass consumes massive amounts of memory, scaling quadratically ($O(S^2)$).  
+   This is why optimizations like FlashAttention are introduced.
 
 ## Q1: How does Pre-LN and Post-LN in the FFN layer effect Gradient Flow and Learning Rate Sensitivity?
 
@@ -163,7 +167,8 @@ def forward(self, x, sublayer):
 
 Applied on the output of each sublayer (Attention or FeedForward),
 **before** adding back to the residual stream.  
-This is the most important dropout location as it covers both sublayers in one shot.
+The sublayer output is the new information being added to the residual stream  
+Dropping parts of it forces the model not to rely too heavily on any single transformation
 
 > Paper: _"We apply dropout to the output of each sub-layer, before it is added to the sub-layer input."_
 
@@ -306,9 +311,8 @@ to future positions. It forces **autoregressive behaviour**.
 
 Used in cross-attention where `Q = x` (decoder), `K = V = enc_out` (encoder).  
 This masks out **padding tokens in the source sequence**. Sentences in a batch
-have different lengths, so shorter ones get padded with dummy tokens to match
-the longest.  
-The decoder should not attend to those padding positions - they
+have different lengths, so shorter ones get padded with dummy tokens to match the longest.  
+The encoder should not attend to those padding positions - they
 carry no real information.
 
 ---
@@ -322,3 +326,9 @@ carry no real information.
 | Shape              | `(d_model, d_model)` triangular  | `(1, src_len)` flat             |
 | Purpose            | Prevent cheating during training | Ignore meaningless padding      |
 | Changes per batch? | No (same triangle always)        | Yes (depends on source lengths) |
+
+## Q5: What type of normalization do we use and why ?
+
+## Q6: Why exactly do we divide the query-key dot product by $\sqrt{d_k}$? What happens to the gradients during backpropagation if you omit this?
+
+## Q7: What is the significance of warm-up steps?

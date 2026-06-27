@@ -1,0 +1,27 @@
+[project]
+name = "transformers-from-scratch"
+version = "0.1.0"
+description = "Implementing transformers from scratch in PyTorch"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "datasets>=5.0.0",
+    "sympy>=1.14.0",
+    "tensorboard>=2.20.0",
+    "tokenizers>=0.23.1",
+    "torch>=2.12.1",
+    "torchaudio>=2.11.0",
+    "torchvision>=0.27.1",
+    "transformers>=0.1.0",
+    "typing-extensions>=4.15.0",
+]
+
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
+
+[tool.uv.sources]
+torch = [ { index = "pytorch-cu130" } ]
+torchvision = [ { index = "pytorch-cu130" } ]
+torchaudio = [ { index = "pytorch-cu130" } ]
