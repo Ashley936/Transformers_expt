@@ -14,6 +14,67 @@ from dataset import BillingualDataset, causal_mask
 from model import build_transformer
 from config import get_weights_file_path, get_config
 
+def greedy_decode(model, enc_input, enc_mask, tokenizer_src, tokenizer_tgt, max_len, device):
+    sos_idx=tokenizer_src.token_to_id("[sos]")
+    eos_idx=tokenizer_src.token_to_id("[eos]")
+
+    # Precompute the enc output and use it to find each decoder token
+    enc_output=model.encode(enc_input, enc_mask) # (batch=1, src_seq_len, d_model)
+
+    decoder_input=torch.empty(1, 1).fill_(sos_idx).type_as(enc_input).to(device) # [[sos_id]] (1, 1)
+    while True:
+        if decoder_input.size(1) == max_len:
+            break
+
+        # build causal mask (hide i+1th to nth token for each ith token from 1 to n where n is the last added token)
+        decoder_mask = causal_mask(decoder_input.size(1)).type_as(enc_mask).to(device)
+
+        out = model.decode(decoder_input, enc_output, enc_mask, decoder_mask) # (batch, n+1, d_model) (1, 1, 512) first time
+
+        # Get the last token
+        prob = model.project(out[:, -1]) # (takes the last token (1, 512) ----> (1, vocab_size))
+
+        _, next_word = torch.max(prob, dim=1) # next_word shape (1)
+        decoder_input = torch.cat([decoder_input, torch.empty(1, 1).type_as(enc_input).fill_(next_word.item()).to(device)], dim=1)
+        # [[sos_id, token_1, token_2, .... token_n+1]]
+        if next_word == eos_idx:
+            break
+
+    return decoder_input.squeeze(0) # strips away the dummy batch dimension --> (num_tokens_gen)
+
+
+
+def run_validation(model, validation_ds, tokenizer_src, tokenizer_tgt, max_len, device, print_msg, global_state, writer, validation_batch_size=2):
+    # change model to eval mode
+    model.eval()
+    count=0
+
+    # Size of control window
+    console_width = 80 
+
+    with torch.no_grad():
+        for batch in validation_ds:
+            count+=1
+            encoder_input= batch['enc_input'].to(device) # (B, seq_len)
+            encoder_mask = batch['enc_mask'].to(device) # (B, 1, 1, seq_len)
+
+            assert encoder_input.size(0) == 1, "Batch size must be 1 for validation"
+            '''why is this ? -> because we are decoding word by word and the len of each sen is diff'''
+
+            model_out = greedy_decode(model, encoder_input, encoder_mask, tokenizer_src, tokenizer_tgt, max_len, device)
+            
+            src_text = batch['src_text'][0]
+            tgt_text = batch['tgt_text'][0]
+            output_text = tokenizer_tgt.decode(model_out.detach().cpu().numpy())
+
+            print_msg('-'*console_width)
+            print_msg(f'SOURCE TEXT: {src_text}')
+            print_msg(f'EXPECTED TEXT: {tgt_text}')
+            print_msg(f'MODEL OUTPUT TEXT: {output_text}')
+
+            if count == validation_batch_size:
+                break
+    
 # This is a generator (the func does not completes on the first func call)
 def get_all_sentences(ds, lang):
     for item in ds:
@@ -146,6 +207,10 @@ def train(config):
             optimizer.step()
             optimizer.zero_grad()
 
+            # Run validation
+            if global_step % config['val_interval'] == 0:
+                run_validation(model, val_dataloader, tokenizer_src, tokenizer_tgt, config['seq_len'], device, lambda msg: batch_iterator.write(msg), global_step, writer)
+            
             global_step+=1
         
         # Save model at each epoch
