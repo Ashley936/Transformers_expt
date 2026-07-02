@@ -112,7 +112,7 @@ def get_or_build_tokenizer(config, ds, lang):
 
 def get_ds(config):
     # Get only the train dataset and then create test, train, valid set
-    ds_raw=load_dataset('opus_books', f'{config["lang_src"]}-{config["lang_tgt"]}', split='train')
+    ds_raw=load_dataset('Helsinki-NLP/opus_books', f'{config["lang_src"]}-{config["lang_tgt"]}', split='train')
 
     # Building tokenizers
     tokenizer_src=get_or_build_tokenizer(config, ds_raw, config["lang_src"])
@@ -179,6 +179,10 @@ def train(config, train_dataloader=None, val_dataloader=None, tokenizer_src=None
                 step, config['d_model'], factor=1, warmup=config["warmup_steps"]
             ),
         )
+        print(f"[warmup] enabled, warmup_steps={config['warmup_steps']}")
+    else:
+        lr_scheduler = None
+        print("[warmup] disabled — flat LR")
 
     
     initial_epoch=0
@@ -216,7 +220,7 @@ def train(config, train_dataloader=None, val_dataloader=None, tokenizer_src=None
         for batch in batch_iterator:
             batch_i += 1
             '''batch -> enc_input, dec_input, label, enc_mask, dec_mask, src_txt, tgt_txt'''
-            print("For batch using ", device)
+
             encoder_input = batch['enc_input'].to(device) # (B, seq_len)
             decoder_input = batch['dec_input'].to(device) # (B, seq_len)
             encoder_mask = batch['enc_mask'].to(device) # (B, 1, 1, seq_len)
@@ -257,16 +261,21 @@ def train(config, train_dataloader=None, val_dataloader=None, tokenizer_src=None
             if config['lr_schedule'] == 'warmup':
                 lr_scheduler.step()
 
+            # print lr every 10 step
+            if batch % 10 == 0:
+                current_lr = lr_scheduler.get_last_lr()[0] if config['lr_schedule'] == 'warmup' else config['lr']
+                writer.add_scalar('learning rate', current_lr, global_step)
+            
             history["train"].append({
                 "step": global_step,
                 "epoch": epoch,
                 "loss": loss.item(),
-                "grad_norm": unclipped_grad_norm,
+                "grad_norm": unclipped_grad_norm.item(),
                 "lr": lr_scheduler.get_last_lr()[0] if config['lr_schedule'] == 'warmup' else config['lr'],
             })
 
             # Run validation
-            if global_step % config['val_interval'] == 0:
+            if global_step != 0 and global_step % config['val_interval'] == 0:
                 current_bleu = run_validation(model, val_dataloader, tokenizer_src, tokenizer_tgt, config['seq_len'], device, lambda msg: batch_iterator.write(msg), global_step, writer, config["val_batch_size"])
                 history["val"].append({"step": global_step, "epoch": epoch, "bleu": current_bleu})
 

@@ -113,6 +113,11 @@ for cell in GRID:
     config["model_folder"] = f"weights_{run_name}"
     config["datasource"] = str(DRIVE_ROOT / "checkpoints")
 
+    # FOR GOOGLE COLLAB
+    config["batch_size"] = 24
+    config["warmup_steps"] = 300
+    config["val_interval"] = 300
+    
     start = time.time()
     try:
         result = train(
