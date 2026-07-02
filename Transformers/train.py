@@ -90,7 +90,6 @@ def run_validation(model, validation_ds, tokenizer_src, tokenizer_tgt, max_len, 
     bleu_score = metric(predicted, expected)
     
     writer.add_scalar('validation BLEU', bleu_score.item(), global_step)
-    writer.flush()
 
     return bleu_score.item()
     
@@ -158,14 +157,15 @@ def rate(step, model_size, factor, warmup):
         step = 1
     return factor * (model_size ** (-0.5) * min(step ** (-0.5), step * warmup ** (-1.5)))
 
-def train(config):
+def train(config, train_dataloader=None, val_dataloader=None, tokenizer_src=None, tokenizer_tgt=None):
     # define device
     device=torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print("Using device: ", device)
 
     Path(f"{config['datasource']}_{config['model_folder']}").mkdir(parents=True, exist_ok=True)
 
-    train_dataloader, val_dataloader, tokenizer_src, tokenizer_tgt=get_ds(config)
+    if train_dataloader is None or val_dataloader is None or tokenizer_src is None or tokenizer_tgt is None:
+        train_dataloader, val_dataloader, tokenizer_src, tokenizer_tgt=get_ds(config)
     model=get_model(config, tokenizer_src.get_vocab_size(), tokenizer_tgt.get_vocab_size()).to(device)
 
     # Create Tensorboard
@@ -184,7 +184,13 @@ def train(config):
     initial_epoch=0
     global_step=0
     best_bleu=-1
-    previous_best_filename = None
+    best_checkpoint_path=None
+    previous_best_filename=None
+
+    # Metrics tracked for ablation analysis (loss curve + gradient norms + val BLEU).
+    # Dumped to disk periodically so an overnight Colab disconnect doesn't lose progress.
+    history = {"train": [], "val": []}
+    history_path = Path(f"{config['datasource']}_{config['model_folder']}") / "history.json"
 
     # Load a crashed training from latest .pt checkpoint
     if config['preload']:
@@ -251,18 +257,31 @@ def train(config):
             if config['lr_schedule'] == 'warmup':
                 lr_scheduler.step()
 
+            history["train"].append({
+                "step": global_step,
+                "epoch": epoch,
+                "loss": loss.item(),
+                "grad_norm": unclipped_grad_norm,
+                "lr": lr_scheduler.get_last_lr()[0] if config['lr_schedule'] == 'warmup' else config['lr'],
+            })
+
             # Run validation
             if global_step % config['val_interval'] == 0:
                 current_bleu = run_validation(model, val_dataloader, tokenizer_src, tokenizer_tgt, config['seq_len'], device, lambda msg: batch_iterator.write(msg), global_step, writer, config["val_batch_size"])
-                
+                history["val"].append({"step": global_step, "epoch": epoch, "bleu": current_bleu})
+
+                # Persist history to disk after every validation pass (cheap, and this is
+                # the checkpoint an overnight run can least afford to lose).
+                with open(history_path, "w") as f:
+                    json.dump(history, f, indent=2)
+
                 # Check if this is the best model so far
                 if current_bleu > best_bleu:
                     best_bleu = current_bleu
                     batch_iterator.write(f"New best BLEU score: {best_bleu:6.3f}")
-                    
+
                     if config.get('save_weights', True):
                         best_model_filename = get_weights_file_path(config, f'{epoch}-{batch_i}')
-                        
                         torch.save({
                             'epoch': epoch, 
                             'model_state_dict': model.state_dict(),
@@ -273,8 +292,7 @@ def train(config):
                         if previous_best_filename is not None and Path.exists(previous_best_filename):
                             Path(previous_best_filename).unlink(missing_ok=True)
                         previous_best_filename = best_model_filename
-                model.train()
-
+                        best_checkpoint_path = best_model_filename
             global_step+=1
         
 
@@ -289,13 +307,24 @@ def train(config):
         }, model_filename)
         '''
 
+    # Final history flush + summary returned to caller (e.g. the ablation runner),
+    # so it doesn't have to re-parse tensorboard logs to compare runs.
+    with open(history_path, "w") as f:
+        json.dump(history, f, indent=2)
+
+    writer.close()
+
+    return {
+        "history": history,
+        "best_bleu": best_bleu,
+        "best_checkpoint_path": best_checkpoint_path,
+        "history_path": str(history_path),
+        "config": config,
+    }
+
+
 if __name__ == '__main__':
     # To remove warnings : warnings.filterwarnings('ignore')
 
     config = get_config()
     train(config)
-
-
-
-
-
