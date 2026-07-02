@@ -127,13 +127,17 @@ class MultiHeadAttention(nn.Module):
 
 class ResidualConnection(nn.Module):
     '''Solves the The Vanishing Gradient Problem'''
-    def __init__(self, dropout: float):
+    def __init__(self, d_model: int, dropout: float, norm_type: str):
         super().__init__()
         self.dropout=nn.Dropout(dropout)
-        self.norm=LayerNormalisation()
+        self.norm=LayerNormalisation(d_model)
+        self.norm_type = norm_type
     
     def forward(self, x, sublayer):
-        return x+self.dropout(sublayer(self.norm(x)))
+        if self.norm_type == "pre": # Modern approach
+            return x+self.dropout(sublayer(self.norm(x)))
+        else: # From the paper
+            return self.norm(x + self.dropout(sublayer(x)))
 
 
 '''
@@ -154,11 +158,11 @@ class EncoderBlock(nn.Module):
 
 '''This is dependency injection approach'''
 class EncoderBlock(nn.Module):
-    def __init__(self, self_attention_block: MultiHeadAttention, ff_block: FeedForwardBlock, dropout: float):
+    def __init__(self, self_attention_block: MultiHeadAttention, ff_block: FeedForwardBlock, d_model: int, dropout: float, norm_type:str):
         super().__init__()
         self.self_attention_block=self_attention_block
         self.ff_block=ff_block
-        self.residual_connections=nn.ModuleList([ResidualConnection(dropout) for _ in range(2)])
+        self.residual_connections=nn.ModuleList([ResidualConnection(d_model, dropout, norm_type) for _ in range(2)])
 
     def forward(self, x: Tensor, src_mask: Tensor=None):
         x = self.residual_connections[0](x, lambda x: self.self_attention_block(x, x, x, src_mask))
@@ -182,13 +186,13 @@ class Encoder(nn.Module):
         return self.norm(x)
 
 class DecoderBlock(nn.Module):
-    def __init__(self, self_attn_block: MultiHeadAttention, cross_attn_block: MultiHeadAttention, ff_block: FeedForwardBlock, dropout: float):
+    def __init__(self, self_attn_block: MultiHeadAttention, cross_attn_block: MultiHeadAttention, ff_block: FeedForwardBlock, d_model: int, dropout: float, norm_type:str):
         super().__init__()
         self.self_attn=self_attn_block
         self.cross_attn=cross_attn_block
         self.ff_block=ff_block
 
-        self.residual_connections=nn.ModuleList([ResidualConnection(dropout) for _ in range(3)])
+        self.residual_connections=nn.ModuleList([ResidualConnection(d_model, dropout, norm_type) for _ in range(3)])
 
     def forward(self, x: Tensor, enc_out: Tensor, src_mask: Tensor=None, tgt_mask: Tensor=None):
         x=self.residual_connections[0](x, lambda x: self.self_attn(x, x, x, tgt_mask))
@@ -247,7 +251,7 @@ class Transformer(nn.Module):
 
 
 
-def build_transformer(src_vocab_size: int, tgt_vocab_size: int, src_seq_len: int, tgt_seq_len: int, d_model: int=512, N: int=6, h: int=8, d_ff: int=2048, dropout: float=0.1):
+def build_transformer(src_vocab_size: int, tgt_vocab_size: int, src_seq_len: int, tgt_seq_len: int, d_model: int=512, norm_type: str = "pre", N: int=6, h: int=8, d_ff: int=2048, dropout: float=0.1):
     # Initialize text embeddings
     src_emb=TextEncoding(d_model, src_vocab_size)
     tgt_emb=TextEncoding(d_model, tgt_vocab_size)
@@ -261,7 +265,7 @@ def build_transformer(src_vocab_size: int, tgt_vocab_size: int, src_seq_len: int
     for _ in range(N):
         self_attention_block=MultiHeadAttention(d_model, h, dropout)
         ff_block=FeedForwardBlock(d_model, d_ff, dropout)
-        encoder_block=EncoderBlock(self_attention_block, ff_block, dropout)
+        encoder_block=EncoderBlock(self_attention_block, ff_block, d_model, dropout, norm_type)
         encoder_layers.append(encoder_block)
     
     # Initialize decoder layers
@@ -270,7 +274,7 @@ def build_transformer(src_vocab_size: int, tgt_vocab_size: int, src_seq_len: int
         self_attention_block=MultiHeadAttention(d_model, h, dropout)
         cross_attention_block=MultiHeadAttention(d_model, h, dropout)
         ff_block=FeedForwardBlock(d_model, d_ff, dropout)
-        decoder_block=DecoderBlock(self_attention_block, cross_attention_block, ff_block, dropout)
+        decoder_block=DecoderBlock(self_attention_block, cross_attention_block, ff_block, d_model, dropout, norm_type)
         decoder_layers.append(decoder_block)
     
     # Initialize the projection layer

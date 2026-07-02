@@ -1,3 +1,4 @@
+import json
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader, random_split
@@ -10,6 +11,7 @@ from tokenizers.pre_tokenizers import Whitespace
 from pathlib import Path
 from tqdm import tqdm
 from torchmetrics.text import BLEUScore
+from torch.optim.lr_scheduler import LambdaLR
 
 from dataset import BillingualDataset, causal_mask
 from model import build_transformer
@@ -89,6 +91,8 @@ def run_validation(model, validation_ds, tokenizer_src, tokenizer_tgt, max_len, 
     
     writer.add_scalar('validation BLEU', bleu_score.item(), global_step)
     writer.flush()
+
+    return bleu_score.item()
     
 # This is a generator (the func does not completes on the first func call)
 def get_all_sentences(ds, lang):
@@ -146,8 +150,13 @@ def get_ds(config):
     return train_dataloader, val_dataloader, tokenizer_src, tokenizer_tgt
 
 def get_model(config, src_vocab_size, tgt_vocab_size):
-    model=build_transformer(src_vocab_size, tgt_vocab_size, config['seq_len'], config['seq_len'], config['d_model'])
+    model=build_transformer(src_vocab_size, tgt_vocab_size, config['seq_len'], config['seq_len'], config['d_model'], config['norm_type'])
     return model
+
+def rate(step, model_size, factor, warmup):
+    if step == 0:
+        step = 1
+    return factor * (model_size ** (-0.5) * min(step ** (-0.5), step * warmup ** (-1.5)))
 
 def train(config):
     # define device
@@ -162,11 +171,20 @@ def train(config):
     # Create Tensorboard
     writer=SummaryWriter(config['experiment_name'])
 
-    optimizer=torch.optim.Adam(model.parameters(), lr=config['lr'], eps=1e-9)
+    optimizer=torch.optim.Adam(model.parameters(), lr=config['lr'], betas=(0.9, 0.98), eps=1e-9)
+    if config['lr_schedule'] == 'warmup':
+        lr_scheduler = LambdaLR(
+            optimizer=optimizer,
+            lr_lambda=lambda step: rate(
+                step, config['d_model'], factor=1, warmup=config["warmup_steps"]
+            ),
+        )
 
     
     initial_epoch=0
     global_step=0
+    best_bleu=-1
+    previous_best_filename = None
 
     # Load a crashed training from latest .pt checkpoint
     if config['preload']:
@@ -188,8 +206,9 @@ def train(config):
     for epoch in range(initial_epoch, config['num_epochs']):
         model.train()
         batch_iterator = tqdm(train_dataloader, desc=f'Processing epoch {epoch:02d}')
-
+        batch_i = 0
         for batch in batch_iterator:
+            batch_i += 1
             '''batch -> enc_input, dec_input, label, enc_mask, dec_mask, src_txt, tgt_txt'''
             print("For batch using ", device)
             encoder_input = batch['enc_input'].to(device) # (B, seq_len)
@@ -209,7 +228,11 @@ def train(config):
                 (B, seq_len) => (B*seq_len)
                 (B, seq_len, vocab_size) => (B*seq_len, vocab_size)'''
             loss = loss_fn(proj_out.view(-1, tokenizer_tgt.get_vocab_size()), label.view(-1))
-            batch_iterator.set_postfix({f"loss": f"{loss.item():6.3f}"})
+
+            if config['lr_schedule'] == 'warmup':
+                batch_iterator.set_postfix({"loss": f"{loss.item():6.3f}", "lr": f"{lr_scheduler.get_last_lr()[0]:6.1e}", "batch step": f"{batch_i:03d}"})
+            else:
+                batch_iterator.set_postfix({f"loss": f"{loss.item():6.3f}"})
 
             # log the loss in tensorboard
             writer.add_scalar('train loss', loss.item(), global_step)
@@ -218,16 +241,44 @@ def train(config):
             # Backpropagate the loss
             loss.backward()
 
+            unclipped_grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+
+            writer.add_scalar('Gradient Norm (Unclipped)', unclipped_grad_norm.item(), global_step)
+
             #update the weights
             optimizer.step()
-            optimizer.zero_grad()
+            optimizer.zero_grad(set_to_none=True)  # prevents the system from doing unnecessary memory allocations for zeros, marginally speeding up training loop
+            if config['lr_schedule'] == 'warmup':
+                lr_scheduler.step()
 
             # Run validation
             if global_step % config['val_interval'] == 0:
-                run_validation(model, val_dataloader, tokenizer_src, tokenizer_tgt, config['seq_len'], device, lambda msg: batch_iterator.write(msg), global_step, writer, config["val_batch_size"])
-            
+                current_bleu = run_validation(model, val_dataloader, tokenizer_src, tokenizer_tgt, config['seq_len'], device, lambda msg: batch_iterator.write(msg), global_step, writer, config["val_batch_size"])
+                
+                # Check if this is the best model so far
+                if current_bleu > best_bleu:
+                    best_bleu = current_bleu
+                    batch_iterator.write(f"New best BLEU score: {best_bleu:6.3f}")
+                    
+                    if config.get('save_weights', True):
+                        best_model_filename = get_weights_file_path(config, f'{epoch}-{batch_i}')
+                        
+                        torch.save({
+                            'epoch': epoch, 
+                            'model_state_dict': model.state_dict(),
+                            'optimizer_state_dict': optimizer.state_dict(),
+                            'global_step': global_step,
+                            'best_bleu': best_bleu # Save the score so you know how good it is later
+                        }, best_model_filename)
+                        if previous_best_filename is not None and Path.exists(previous_best_filename):
+                            Path(previous_best_filename).unlink(missing_ok=True)
+                        previous_best_filename = best_model_filename
+                model.train()
+
             global_step+=1
         
+
+        ''' 
         # Save model at each epoch
         model_filename = get_weights_file_path(config, epoch)
         torch.save({
@@ -236,6 +287,7 @@ def train(config):
             'optimizer_state_dict': optimizer.state_dict(),
             'global_step': global_step
         }, model_filename)
+        '''
 
 if __name__ == '__main__':
     # To remove warnings : warnings.filterwarnings('ignore')

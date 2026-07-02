@@ -5,6 +5,10 @@ def get_config():
         "batch_size": 8,
         "num_epochs": 20,
         "lr": 10**-4, # usually we take large lr and the reduce it overtime
+        "norm_type": "pre", # 'pre' or 'post' FOR EXPT
+        "lr_schedule": "flat", # 'flat' or 'warmup' FOR EXPT
+        "warmup_steps": 1000, # FOR EXPT
+        "save_weights": True,
         "seq_len": 350,
         "d_model": 512,
         "datasource": 'opus_books',
