@@ -9,6 +9,7 @@ from tokenizers.trainers import WordLevelTrainer
 from tokenizers.pre_tokenizers import Whitespace
 from pathlib import Path
 from tqdm import tqdm
+from torchmetrics.text import BLEUScore
 
 from dataset import BillingualDataset, causal_mask
 from model import build_transformer
@@ -44,28 +45,35 @@ def greedy_decode(model, enc_input, enc_mask, tokenizer_src, tokenizer_tgt, max_
 
 
 
-def run_validation(model, validation_ds, tokenizer_src, tokenizer_tgt, max_len, device, print_msg, global_state, writer, validation_batch_size=2):
+def run_validation(model, validation_ds, tokenizer_src, tokenizer_tgt, max_len, device, print_msg, global_step, writer, validation_batch_size=2):
     # change model to eval mode
     model.eval()
-    count=0
+    count = 0
+
+    # Lists to store text for BLEU calculation
+    expected = []
+    predicted = []
 
     # Size of control window
     console_width = 80 
 
     with torch.no_grad():
         for batch in validation_ds:
-            count+=1
-            encoder_input= batch['enc_input'].to(device) # (B, seq_len)
+            count += 1
+            encoder_input = batch['enc_input'].to(device) # (B, seq_len)
             encoder_mask = batch['enc_mask'].to(device) # (B, 1, 1, seq_len)
 
             assert encoder_input.size(0) == 1, "Batch size must be 1 for validation"
-            '''why is this ? -> because we are decoding word by word and the len of each sen is diff'''
 
             model_out = greedy_decode(model, encoder_input, encoder_mask, tokenizer_src, tokenizer_tgt, max_len, device)
             
             src_text = batch['src_text'][0]
             tgt_text = batch['tgt_text'][0]
             output_text = tokenizer_tgt.decode(model_out.detach().cpu().numpy())
+
+            # Accumulate texts for BLEU (BLEUScore expects targets as a list of lists)
+            expected.append([tgt_text])
+            predicted.append(output_text)
 
             print_msg('-'*console_width)
             print_msg(f'SOURCE TEXT: {src_text}')
@@ -74,6 +82,13 @@ def run_validation(model, validation_ds, tokenizer_src, tokenizer_tgt, max_len, 
 
             if count == validation_batch_size:
                 break
+    
+    # Calculate and log the BLEU Score
+    metric = BLEUScore()
+    bleu_score = metric(predicted, expected)
+    
+    writer.add_scalar('validation BLEU', bleu_score.item(), global_step)
+    writer.flush()
     
 # This is a generator (the func does not completes on the first func call)
 def get_all_sentences(ds, lang):
@@ -209,7 +224,7 @@ def train(config):
 
             # Run validation
             if global_step % config['val_interval'] == 0:
-                run_validation(model, val_dataloader, tokenizer_src, tokenizer_tgt, config['seq_len'], device, lambda msg: batch_iterator.write(msg), global_step, writer)
+                run_validation(model, val_dataloader, tokenizer_src, tokenizer_tgt, config['seq_len'], device, lambda msg: batch_iterator.write(msg), global_step, writer, config["val_batch_size"])
             
             global_step+=1
         

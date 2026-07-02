@@ -15,7 +15,8 @@ def get_config():
         "preload": "",
         "tokenizer_path": "dataset/tokenizer_{0}.json",
         "experiment_name": "runs/tmodel",
-        "val_interval": 100
+        "val_interval": 900, # currently we have 3638 steps per epoch so val will run 4 times per epoch
+        "val_batch_size": 50
     }
 
 def get_weights_file_path(config, epoch: str):
