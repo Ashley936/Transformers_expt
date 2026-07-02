@@ -77,7 +77,9 @@ GRID = [
 # 2. Build the dataset / tokenizers ONCE, shared across all 4 runs
 # ---------------------------------------------------------------------------
 base_config = get_config()
-
+# For google collab
+base_config["batch_size"] = 24
+base_config["val_interval"] = 300
 print("Building shared dataloaders/tokenizers (reused by all 4 runs)...")
 train_dataloader, val_dataloader, tokenizer_src, tokenizer_tgt = get_ds(base_config)
 
@@ -114,9 +116,8 @@ for cell in GRID:
     config["datasource"] = str(DRIVE_ROOT / "checkpoints")
 
     # FOR GOOGLE COLLAB
-    config["batch_size"] = 24
     config["warmup_steps"] = 300
-    config["val_interval"] = 300
+    
     
     start = time.time()
     try:

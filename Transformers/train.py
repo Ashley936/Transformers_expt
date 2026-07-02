@@ -76,11 +76,11 @@ def run_validation(model, validation_ds, tokenizer_src, tokenizer_tgt, max_len, 
             # Accumulate texts for BLEU (BLEUScore expects targets as a list of lists)
             expected.append([tgt_text])
             predicted.append(output_text)
-
-            print_msg('-'*console_width)
-            print_msg(f'SOURCE TEXT: {src_text}')
-            print_msg(f'EXPECTED TEXT: {tgt_text}')
-            print_msg(f'MODEL OUTPUT TEXT: {output_text}')
+            if count < 2:
+                print_msg('-'*console_width)
+                print_msg(f'SOURCE TEXT: {src_text}')
+                print_msg(f'EXPECTED TEXT: {tgt_text}')
+                print_msg(f'MODEL OUTPUT TEXT: {output_text}')
 
             if count == validation_batch_size:
                 break
@@ -246,7 +246,7 @@ def train(config, train_dataloader=None, val_dataloader=None, tokenizer_src=None
 
             # log the loss in tensorboard
             writer.add_scalar('train loss', loss.item(), global_step)
-            writer.flush() # write to disk
+            
 
             # Backpropagate the loss
             loss.backward()
@@ -262,9 +262,10 @@ def train(config, train_dataloader=None, val_dataloader=None, tokenizer_src=None
                 lr_scheduler.step()
 
             # print lr every 10 step
-            if batch % 10 == 0:
+            if global_step % 10 == 0:
                 current_lr = lr_scheduler.get_last_lr()[0] if config['lr_schedule'] == 'warmup' else config['lr']
                 writer.add_scalar('learning rate', current_lr, global_step)
+                writer.flush() # write to disk
             
             history["train"].append({
                 "step": global_step,
