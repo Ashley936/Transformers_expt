@@ -299,7 +299,7 @@ def train(config, train_dataloader=None, val_dataloader=None, tokenizer_src=None
                             'global_step': global_step,
                             'best_bleu': best_bleu # Save the score so you know how good it is later
                         }, best_model_filename)
-                        if previous_best_filename is not None and Path.exists(previous_best_filename):
+                        if previous_best_filename is not None and Path(previous_best_filename).exists():
                             Path(previous_best_filename).unlink(missing_ok=True)
                         previous_best_filename = best_model_filename
                         best_checkpoint_path = best_model_filename
