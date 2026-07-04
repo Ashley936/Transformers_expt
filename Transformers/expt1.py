@@ -52,7 +52,7 @@ from train import train, get_ds
 # from google.colab import drive
 # drive.mount('/content/drive')
 
-DRIVE_ROOT = Path("/content/drive/MyDrive/transformer_ablation")
+DRIVE_ROOT = Path("/kaggle/working/transformer_ablation")
 DRIVE_ROOT.mkdir(parents=True, exist_ok=True)
 
 # ---------------------------------------------------------------------------
@@ -115,8 +115,10 @@ for cell in GRID:
     config["model_folder"] = f"weights_{run_name}"
     config["datasource"] = str(DRIVE_ROOT / "checkpoints")
 
-    # FOR GOOGLE COLLAB
+    # FOR Kaggle
     config["warmup_steps"] = 300
+    config["val_batch_size"] = 10
+    config["val_interval"] = 600
     
     
     start = time.time()

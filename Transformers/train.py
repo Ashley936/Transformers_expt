@@ -67,7 +67,7 @@ def run_validation(model, validation_ds, tokenizer_src, tokenizer_tgt, max_len, 
 
             assert encoder_input.size(0) == 1, "Batch size must be 1 for validation"
 
-            model_out = greedy_decode(model, encoder_input, encoder_mask, tokenizer_src, tokenizer_tgt, max_len, device)
+            model_out = greedy_decode(model, encoder_input, encoder_mask, tokenizer_src, tokenizer_tgt, max_len=60, device=device)
             
             src_text = batch['src_text'][0]
             tgt_text = batch['tgt_text'][0]
@@ -152,10 +152,12 @@ def get_model(config, src_vocab_size, tgt_vocab_size):
     model=build_transformer(src_vocab_size, tgt_vocab_size, config['seq_len'], config['seq_len'], config['d_model'], config['norm_type'])
     return model
 
-def rate(step, model_size, factor, warmup):
+def rate(step, warmup):
     if step == 0:
         step = 1
-    return factor * (model_size ** (-0.5) * min(step ** (-0.5), step * warmup ** (-1.5)))
+    # Peaks at 1.0 when step == warmup, matching flat LR at that point
+    return min(step ** -0.5, step * warmup ** -1.5) / (warmup ** -0.5)
+
 
 def train(config, train_dataloader=None, val_dataloader=None, tokenizer_src=None, tokenizer_tgt=None):
     # define device
@@ -175,9 +177,7 @@ def train(config, train_dataloader=None, val_dataloader=None, tokenizer_src=None
     if config['lr_schedule'] == 'warmup':
         lr_scheduler = LambdaLR(
             optimizer=optimizer,
-            lr_lambda=lambda step: rate(
-                step, config['d_model'], factor=1, warmup=config["warmup_steps"]
-            ),
+            lr_lambda=lambda step: rate(step, warmup=config["warmup_steps"]),
         )
         print(f"[warmup] enabled, warmup_steps={config['warmup_steps']}")
     else:

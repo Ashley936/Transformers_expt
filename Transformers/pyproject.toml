@@ -11,6 +11,7 @@ dependencies = [
     "tokenizers>=0.23.1",
     "torch>=2.12.1",
     "torchaudio>=2.11.0",
+    "torchmetrics>=1.9.0",
     "torchvision>=0.27.1",
     "transformers>=0.1.0",
     "typing-extensions>=4.15.0",
