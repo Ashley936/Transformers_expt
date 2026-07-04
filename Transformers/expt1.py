@@ -2,34 +2,6 @@
 Ablation Study Runner
 ======================
 Pre-LN vs Post-LN  x  Flat LR vs Warmup+Decay  (2x2 grid, 4 runs, sequential)
-
-Design notes (why this file looks the way it does):
-
-- model.py / config.py are untouched. train.py only got the minimum needed to
-  support this: gradient-norm tracking, a returned metrics dict, best-only
-  checkpointing, and the ability to accept pre-built dataloaders. Everything
-  ablation-specific (the grid, run naming, Drive paths, plotting, crash
-  isolation) lives HERE so your base transformer code stays reusable for
-  future projects (KV-cache, RoPE, etc.) without ablation cruft in it.
-
-- Tokenizers/dataloaders are built ONCE and reused across all 4 runs, since
-  datasource/langs/seq_len/batch_size are identical in every cell of the
-  grid. Rebuilding them 4x would waste a big chunk of your free-tier GPU time
-  on pure tokenization/dataset-scanning.
-
-- Every run is wrapped in try/except. If one config OOMs or crashes at 3am,
-  the other 3 still run - you don't want one bad cell to kill an unattended
-  overnight sweep.
-
-- Results are flushed to Google Drive after EVERY run (not just at the end),
-  because Colab free-tier runtimes can be reclaimed/disconnected without
-  warning and local (non-Drive) storage is wiped when that happens.
-
-- Only the single best checkpoint per run is kept (train.py handles the
-  delete-old-then-save-new logic). You said you'll push to Drive yourself
-  after each run - but since local storage disappears on disconnect, this
-  script writes checkpoints straight to Drive to begin with, so there's
-  nothing to lose even if you don't get to it in time.
 """
 import copy
 import gc
@@ -43,28 +15,17 @@ import torch
 from config import get_config
 from train import train, get_ds
 
-# ---------------------------------------------------------------------------
-# 0. Colab / Drive setup
-# ---------------------------------------------------------------------------
-# Uncomment when running in Colab. Mounting Drive FIRST is what makes this
-# whole "survive a disconnect" strategy work - do not skip it.
-#
-# from google.colab import drive
-# drive.mount('/content/drive')
-
 DRIVE_ROOT = Path("/kaggle/working/transformer_ablation")
 DRIVE_ROOT.mkdir(parents=True, exist_ok=True)
 
 # ---------------------------------------------------------------------------
 # 1. Ablation-specific overrides
 # ---------------------------------------------------------------------------
-# Free-tier T4 sessions are capped (~12h, often much less with idle timeouts),
-# and this study cares about TRAINING DYNAMICS (loss curves, grad norms,
-# convergence stability), not final translation quality. 20 epochs x 4 runs
-# on the full opus_books en-it set will not finish overnight. Cut epochs down
-# and validate more frequently so each run still produces a readable curve.
-ABLATION_EPOCHS = 5              # <- raise/lower based on how much GPU time you actually get
-ABLATION_VAL_INTERVAL = 300      # more frequent than the default 900, since runs are shorter
+
+ABLATION_EPOCHS = 5
+ABLATION_WARMUP_STEPS = 300
+ABLATION_VAL_INTERVAL = 600     # less validation overhead
+ABLATION_VAL_BATCH_SIZE = 10    # less validation overhead
 
 GRID = [
     {"norm_type": "pre",  "lr_schedule": "flat"},
@@ -77,9 +38,8 @@ GRID = [
 # 2. Build the dataset / tokenizers ONCE, shared across all 4 runs
 # ---------------------------------------------------------------------------
 base_config = get_config()
-# For google collab
 base_config["batch_size"] = 24
-base_config["val_interval"] = 300
+base_config["val_interval"] = ABLATION_VAL_INTERVAL
 print("Building shared dataloaders/tokenizers (reused by all 4 runs)...")
 train_dataloader, val_dataloader, tokenizer_src, tokenizer_tgt = get_ds(base_config)
 
@@ -109,16 +69,15 @@ for cell in GRID:
     config["val_interval"] = ABLATION_VAL_INTERVAL
     config["preload"] = ""  # each ablation cell trains from scratch
 
-    # Route logs/checkpoints straight to Drive, and keep the 4 runs from
-    # colliding with each other (separate tensorboard dir + separate weights dir).
+    # Route logs/checkpoints straight to drive/kaggle (separate tensorboard dir + separate weights dir).
     config["experiment_name"] = str(DRIVE_ROOT / "runs" / run_name)
     config["model_folder"] = f"weights_{run_name}"
     config["datasource"] = str(DRIVE_ROOT / "checkpoints")
 
     # FOR Kaggle
-    config["warmup_steps"] = 300
-    config["val_batch_size"] = 10
-    config["val_interval"] = 600
+    config["warmup_steps"] = ABLATION_WARMUP_STEPS
+    config["val_batch_size"] = ABLATION_VAL_BATCH_SIZE
+    config["val_interval"] = ABLATION_VAL_INTERVAL
     
     
     start = time.time()
@@ -141,13 +100,11 @@ for cell in GRID:
     result["duration_sec"] = time.time() - start
     all_results[run_name] = result
 
-    # Persist after EVERY run, not just at the end - this is the line that
-    # protects the whole overnight sweep from a mid-sequence disconnect.
+    # Persist after EVERY run, not just at the end
     with open(results_path, "w") as f:
         json.dump(all_results, f, indent=2)
 
-    # Free GPU memory before the next run - 4 transformers back-to-back on a
-    # free-tier T4 will OOM if you don't explicitly release the previous one.
+    # Free GPU memory before the next run
     del result
     gc.collect()
     torch.cuda.empty_cache()
@@ -157,9 +114,7 @@ print(f"\nAll runs finished. Results saved to {results_path}")
 # ---------------------------------------------------------------------------
 # 4. Comparison plots (loss curves, grad norms, per-cell + overlay)
 # ---------------------------------------------------------------------------
-# Safe to re-run this section on its own later (e.g. next morning) by loading
-# ablation_results.json instead of re-running the sweep - it doesn't depend
-# on anything still being in memory.
+
 try:
     import matplotlib.pyplot as plt
 
