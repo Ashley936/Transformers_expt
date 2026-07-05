@@ -18,7 +18,10 @@ def get_config():
         "tokenizer_path": "dataset/tokenizer_{0}.json",
         "experiment_name": "runs/tmodel",
         "val_interval": 900, # 300 for collab
-        "val_batch_size": 50
+        "val_batch_size": 50,
+        "seed": 42,
+        "norm_type": "",
+        "lr_schedule": ""
     }
     # in the expt1.py -> "norm_type": "pre", # 'pre' or 'post' FOR EXPT
     #                    "lr_schedule": "flat", # 'flat' or 'warmup' FOR EXPT

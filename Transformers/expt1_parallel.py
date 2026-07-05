@@ -43,8 +43,8 @@ DRIVE_ROOT.mkdir(parents=True, exist_ok=True)
 # ---------------------------------------------------------------------------
 # 1. Ablation-specific overrides
 # ---------------------------------------------------------------------------
-ABLATION_EPOCHS = 5
-ABLATION_WARMUP_STEPS = 300
+ABLATION_EPOCHS = 10
+ABLATION_WARMUP_STEPS = 500
 ABLATION_VAL_INTERVAL = 600     # less validation overhead
 ABLATION_VAL_BATCH_SIZE = 10    # less validation overhead
 

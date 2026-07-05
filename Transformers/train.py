@@ -1,4 +1,6 @@
 import json
+import random
+import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader, random_split
@@ -16,6 +18,12 @@ from torch.optim.lr_scheduler import LambdaLR
 from dataset import BillingualDataset, causal_mask
 from model import build_transformer
 from config import get_weights_file_path, get_config
+
+def set_seed(seed):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
 
 def greedy_decode(model, enc_input, enc_mask, tokenizer_src, tokenizer_tgt, max_len, device):
     sos_idx=tokenizer_src.token_to_id("[sos]")
@@ -113,7 +121,7 @@ def get_or_build_tokenizer(config, ds, lang):
 def get_ds(config):
     # Get only the train dataset and then create test, train, valid set
     ds_raw=load_dataset('Helsinki-NLP/opus_books', f'{config["lang_src"]}-{config["lang_tgt"]}', split='train')
-
+    set_seed(config.get('seed', 42))
     # Building tokenizers
     tokenizer_src=get_or_build_tokenizer(config, ds_raw, config["lang_src"])
     tokenizer_tgt=get_or_build_tokenizer(config, ds_raw, config["lang_tgt"])
@@ -123,7 +131,8 @@ def get_ds(config):
     val_ds_size = len(ds_raw)-train_ds_size
     '''You can initialize a custom generator 
         generator1 = torch.Generator().manual_seed(42)'''
-    train_ds_raw, val_ds_raw=random_split(ds_raw, [train_ds_size, val_ds_size])
+    seed=config['seed']
+    train_ds_raw, val_ds_raw=random_split(ds_raw, [train_ds_size, val_ds_size], generator=torch.Generator().manual_seed(seed))
 
     train_ds=BillingualDataset(train_ds_raw, tokenizer_src, tokenizer_tgt, config["lang_src"], config["lang_tgt"], config["seq_len"])
     val_ds=BillingualDataset(val_ds_raw, tokenizer_src, tokenizer_tgt, config["lang_src"], config["lang_tgt"], config["seq_len"])
@@ -168,6 +177,8 @@ def train(config, train_dataloader=None, val_dataloader=None, tokenizer_src=None
 
     if train_dataloader is None or val_dataloader is None or tokenizer_src is None or tokenizer_tgt is None:
         train_dataloader, val_dataloader, tokenizer_src, tokenizer_tgt=get_ds(config)
+
+    set_seed(config.get('seed', 42))
     model=get_model(config, tokenizer_src.get_vocab_size(), tokenizer_tgt.get_vocab_size()).to(device)
 
     # Create Tensorboard
@@ -250,8 +261,8 @@ def train(config, train_dataloader=None, val_dataloader=None, tokenizer_src=None
 
             # Backpropagate the loss
             loss.backward()
-
-            unclipped_grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            # increased so that no clipping happens
+            unclipped_grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=50.0)
 
             writer.add_scalar('Gradient Norm (Unclipped)', unclipped_grad_norm.item(), global_step)
 
