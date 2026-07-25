@@ -128,15 +128,15 @@ def rate(step, warmup):
     return min(1.0, (step+1)/warmup) # for warmup 0 -> lr then stays lr
 
 # FOR ABLATION
-ACT = {"on": False, "val": {}}
+ACT = {"on": False, "vals": {}}
 def layer_grad_norms(model):
     stats = {}
-    for tag, layers in (("enc", model.encoder.layers), "dec", model.decoder.layers):
+    for tag, layers in (("enc", model.encoder.layers), ("dec", model.decoder.layers)):
         for i, layer in enumerate(layers):
             sq = 0.0
-            for p in layers.parameters():
+            for p in layer.parameters():
                 if p.grad is not None:
-                    sq += p.grad().detach().float().pow(2).sum().item()
+                    sq += p.grad.detach().float().pow(2).sum().item()
             stats[f"{tag}{i}"] = sq ** 0.5
     return stats
 
@@ -144,7 +144,7 @@ def register_act_hooks(model: nn.Transformer):
     def make_hooks(name):
         def hook(mod, inp, out):
             if ACT["on"]:
-                ACT['val'][name] = out.detach().float().std().item()
+                ACT['vals'][name] = out.detach().float().std().item()
         return hook
 
     for i, layer in enumerate(model.encoder.layers):
@@ -217,132 +217,138 @@ def train(config, train_dataloader=None, val_dataloader=None, tokenizer_src=None
         shuffle=False,                       
         collate_fn=val_dataloader.collate_fn, 
     )
+    try:
+        for epoch in range(initial_epoch, config['num_epochs']):
+            model.train()
+            batch_iterator = tqdm(train_dataloader, desc=f'Processing epoch {epoch:02d}')
+            batch_i = 0
+            diverged = False
+            for batch in batch_iterator:
+                batch_i += 1
+                '''batch -> enc_input, dec_input, label, enc_mask, dec_mask, src_txt, tgt_txt'''
 
-    for epoch in range(initial_epoch, config['num_epochs']):
-        model.train()
-        batch_iterator = tqdm(train_dataloader, desc=f'Processing epoch {epoch:02d}')
-        batch_i = 0
-        for batch in batch_iterator:
-            batch_i += 1
-            '''batch -> enc_input, dec_input, label, enc_mask, dec_mask, src_txt, tgt_txt'''
+                encoder_input = batch['enc_input'].to(device) # (B, seq_len)
+                decoder_input = batch['dec_input'].to(device) # (B, seq_len)
+                encoder_mask = batch['enc_mask'].to(device) # (B, 1, 1, seq_len)
+                decoder_mask = batch['dec_mask'].to(device) # (B, 1, seq_len, seq_len)
+                # FOR ABLATION
+                log_layers = (global_step % 50 == 0)
+                ACT["on"] = log_layers
 
-            encoder_input = batch['enc_input'].to(device) # (B, seq_len)
-            decoder_input = batch['dec_input'].to(device) # (B, seq_len)
-            encoder_mask = batch['enc_mask'].to(device) # (B, 1, 1, seq_len)
-            decoder_mask = batch['dec_mask'].to(device) # (B, 1, seq_len, seq_len)
-            # FOR ABLATION
-            log_layers = (global_step % 50 == 0)
-            ACT["on"] = log_layers
+                # Run the forward pass through the transformer
+                encoder_output=model.encode(encoder_input, encoder_mask) #(B, seq_len, d_model)
+                decoder_output=model.decode(decoder_input, encoder_output, encoder_mask, decoder_mask) #(B, seq_len, d_model)
+                proj_out = model.project(decoder_output) # (B, seq_len, tgt_vocab_size)
 
-            # Run the forward pass through the transformer
-            encoder_output=model.encode(encoder_input, encoder_mask) #(B, seq_len, d_model)
-            decoder_output=model.decode(decoder_input, encoder_output, encoder_mask, decoder_mask) #(B, seq_len, d_model)
-            proj_out = model.project(decoder_output) # (B, seq_len, tgt_vocab_size)
+                label = batch['label'].to(device) # (B, seq_len)
 
-            label = batch['label'].to(device) # (B, seq_len)
+                # Calculate the loss 
+                ''' .view(-1) ->squash all dim 
+                    (B, seq_len) => (B*seq_len)
+                    (B, seq_len, vocab_size) => (B*seq_len, vocab_size)'''
+                loss = loss_fn(proj_out.view(-1, tokenizer_tgt.get_vocab_size()), label.view(-1))
 
-            # Calculate the loss 
-            ''' .view(-1) ->squash all dim 
-                (B, seq_len) => (B*seq_len)
-                (B, seq_len, vocab_size) => (B*seq_len, vocab_size)'''
-            loss = loss_fn(proj_out.view(-1, tokenizer_tgt.get_vocab_size()), label.view(-1))
+                if config['lr_schedule'] == 'warmup':
+                    batch_iterator.set_postfix({"loss": f"{loss.item():6.3f}", "lr": f"{lr_scheduler.get_last_lr()[0]:6.1e}", "batch step": f"{batch_i:03d}"})
+                else:
+                    batch_iterator.set_postfix({f"loss": f"{loss.item():6.3f}"})
 
-            if config['lr_schedule'] == 'warmup':
-                batch_iterator.set_postfix({"loss": f"{loss.item():6.3f}", "lr": f"{lr_scheduler.get_last_lr()[0]:6.1e}", "batch step": f"{batch_i:03d}"})
-            else:
-                batch_iterator.set_postfix({f"loss": f"{loss.item():6.3f}"})
-
-            # log the loss in tensorboard
-            writer.add_scalar('train loss', loss.item(), global_step)
-            
-
-            # Backpropagate the loss
-            loss.backward()
-            # increased so that no clipping happens
-            unclipped_grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=float('inf'))
-
-            
-            writer.add_scalar('Gradient Norm (Unclipped)', unclipped_grad_norm.item(), global_step)
-            if not torch.isfinite(loss):
-                batch_iterator.write(f"Diverged at step {global_step}")
-                history["diverged_at_step"] = global_step
-                break
-
-            if log_layers:
-                gn = layer_grad_norms(model)
-
-                for k, v in gn.items():
-                    writer.add_scalar(f"grad_norm_layer/{k}", v, global_step)
-                for k, v in ACT["vals"].items():
-                    writer.add_scalar(f"act_std_layer/{k}", v, global_step)
-                history["train"][-1]["layer_grad_norms"] = gn
-                history["train"][-1]["layer_act_stds"] = dict(ACT["vals"])
+                # log the loss in tensorboard
+                writer.add_scalar('train loss', loss.item(), global_step)
                 
-            #update the weights
-            optimizer.step()
-            optimizer.zero_grad(set_to_none=True)  # prevents the system from doing unnecessary memory allocations for zeros, marginally speeding up training loop
-            if config['lr_schedule'] == 'warmup':
-                lr_scheduler.step()
 
-            # print lr every 10 step
-            if global_step % 10 == 0:
-                current_lr = lr_scheduler.get_last_lr()[0] if config['lr_schedule'] == 'warmup' else config['lr']
-                writer.add_scalar('learning rate', current_lr, global_step)
-                writer.flush() # write to disk
+                # Backpropagate the loss
+                loss.backward()
+                # increased so that no clipping happens
+                unclipped_grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=float('inf'))
+
+                
+                writer.add_scalar('Gradient Norm (Unclipped)', unclipped_grad_norm.item(), global_step)
+                if not torch.isfinite(loss):
+                    batch_iterator.write(f"Diverged at step {global_step}")
+                    history["diverged_at_step"] = global_step
+                    diverged = True
+                    break
+                history["train"].append({
+                    "step": global_step,
+                    "epoch": epoch,
+                    "loss": loss.item(),
+                    "grad_norm": unclipped_grad_norm.item(),
+                    "lr": lr_scheduler.get_last_lr()[0] if config['lr_schedule'] == 'warmup' else config['lr'],
+                })
+                if log_layers:
+                    gn = layer_grad_norms(model)
+
+                    for k, v in gn.items():
+                        writer.add_scalar(f"grad_norm_layer/{k}", v, global_step)
+                    for k, v in ACT["vals"].items():
+                        writer.add_scalar(f"act_std_layer/{k}", v, global_step)
+                    history["train"][-1]["layer_grad_norms"] = gn
+                    history["train"][-1]["layer_act_stds"] = dict(ACT["vals"])
+
+                #update the weights
+                optimizer.step()
+                optimizer.zero_grad(set_to_none=True)  # prevents the system from doing unnecessary memory allocations for zeros, marginally speeding up training loop
+                if config['lr_schedule'] == 'warmup':
+                    lr_scheduler.step()
+
+                # print lr every 10 step
+                if global_step % 10 == 0:
+                    current_lr = lr_scheduler.get_last_lr()[0] if config['lr_schedule'] == 'warmup' else config['lr']
+                    writer.add_scalar('learning rate', current_lr, global_step)
+                    writer.flush() # write to disk
+                
+                
+
+                # Run validation
+                if global_step != 0 and global_step % config['val_interval'] == 0:
+                    val_loss = evaluate_loss(model, eval_loader, loss_fn, tokenizer_tgt.get_vocab_size(), device)
+                    writer.add_scalar('val_loss', val_loss, global_step)
+                    history["val"].append({"step": global_step, "epoch": epoch, "val_loss": val_loss})
+                    # Persist history to disk after every validation pass (cheap, and this is the checkpoint an overnight run can least afford to lose).
+                    with open(history_path, "w") as f:
+                        json.dump(history, f, indent=2)
+                    ''' Removing validation, only calculating and saving val loss
+                    current_bleu = run_validation(model, val_dataloader, tokenizer_src, tokenizer_tgt, config['seq_len'], device, lambda msg: batch_iterator.write(msg), global_step, writer, config["val_batch_size"])
+                    history["val"].append({"step": global_step, "epoch": epoch, "bleu": current_bleu})
+
+                    
+
+                    # Check if this is the best model so far
+                    if current_bleu > best_bleu:
+                        best_bleu = current_bleu
+                        batch_iterator.write(f"New best BLEU score: {best_bleu:6.3f}")
+
+                        if config.get('save_weights', True):
+                            best_model_filename = get_weights_file_path(config, f'{epoch}-{batch_i}')
+                            torch.save({
+                                'epoch': epoch, 
+                                'model_state_dict': model.state_dict(),
+                                'optimizer_state_dict': optimizer.state_dict(),
+                                'global_step': global_step,
+                                'best_bleu': best_bleu # Save the score so you know how good it is later
+                            }, best_model_filename)
+                            if previous_best_filename is not None and Path(previous_best_filename).exists():
+                                Path(previous_best_filename).unlink(missing_ok=True)
+                            previous_best_filename = best_model_filename
+                            best_checkpoint_path = best_model_filename'''
+                global_step+=1
             
-            history["train"].append({
-                "step": global_step,
-                "epoch": epoch,
-                "loss": loss.item(),
-                "grad_norm": unclipped_grad_norm.item(),
-                "lr": lr_scheduler.get_last_lr()[0] if config['lr_schedule'] == 'warmup' else config['lr'],
-            })
-
-            # Run validation
-            if global_step != 0 and global_step % config['val_interval'] == 0:
-                val_loss = evaluate_loss(model, eval_loader, loss_fn, tokenizer_tgt.get_vocab_size(), device)
-                writer.add_scalar('val_loss', val_loss, global_step)
-                history["val"].append({"step": global_step, "epoch": epoch, "val_loss": val_loss})
-                ''' Removing validation, only calculating and saving val loss
-                current_bleu = run_validation(model, val_dataloader, tokenizer_src, tokenizer_tgt, config['seq_len'], device, lambda msg: batch_iterator.write(msg), global_step, writer, config["val_batch_size"])
-                history["val"].append({"step": global_step, "epoch": epoch, "bleu": current_bleu})
-
-                # Persist history to disk after every validation pass (cheap, and this is
-                # the checkpoint an overnight run can least afford to lose).
-                with open(history_path, "w") as f:
-                    json.dump(history, f, indent=2)
-
-                # Check if this is the best model so far
-                if current_bleu > best_bleu:
-                    best_bleu = current_bleu
-                    batch_iterator.write(f"New best BLEU score: {best_bleu:6.3f}")
-
-                    if config.get('save_weights', True):
-                        best_model_filename = get_weights_file_path(config, f'{epoch}-{batch_i}')
-                        torch.save({
-                            'epoch': epoch, 
-                            'model_state_dict': model.state_dict(),
-                            'optimizer_state_dict': optimizer.state_dict(),
-                            'global_step': global_step,
-                            'best_bleu': best_bleu # Save the score so you know how good it is later
-                        }, best_model_filename)
-                        if previous_best_filename is not None and Path(previous_best_filename).exists():
-                            Path(previous_best_filename).unlink(missing_ok=True)
-                        previous_best_filename = best_model_filename
-                        best_checkpoint_path = best_model_filename'''
-            global_step+=1
-        
-
-        ''' 
-        # Save model at each epoch
-        model_filename = get_weights_file_path(config, epoch)
-        torch.save({
-            'epoch': epoch, 
-            'model_state_dict': model.state_dict(),
-            'optimizer_state_dict': optimizer.state_dict(),
-            'global_step': global_step
-        }, model_filename)
-        '''
+            if diverged:
+                break
+            
+            # Save model at each epoch
+            model_filename = get_weights_file_path(config, epoch)
+            torch.save({
+                'epoch': epoch, 
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'global_step': global_step
+            }, model_filename)
+    finally:
+        with open(history_path, "w") as f:
+            json.dump(history, f, indent=2)
+        writer.close()  
 
     # Final history flush + summary returned to caller (e.g. the ablation runner),
     # so it doesn't have to re-parse tensorboard logs to compare runs.
@@ -353,7 +359,7 @@ def train(config, train_dataloader=None, val_dataloader=None, tokenizer_src=None
 
     return {
         "history": history,
-        "best_bleu": best_bleu,
+        #"best_bleu": best_bleu,
         "best_checkpoint_path": best_checkpoint_path,
         "history_path": str(history_path),
         "config": config,

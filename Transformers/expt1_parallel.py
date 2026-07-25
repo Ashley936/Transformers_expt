@@ -194,7 +194,7 @@ if __name__ == "__main__":
             grad_norms = [h["grad_norm"] for h in train_hist]
             val_hist = result["history"]["val"]
             val_steps = [h["step"] for h in val_hist]
-            val_bleu = [h["bleu"] for h in val_hist]
+            val_bleu = [h["val_loss"] for h in val_hist]
 
             axes[0, 0].plot(steps, losses, label=run_name, alpha=0.8)
             axes[0, 1].plot(steps, grad_norms, label=run_name, alpha=0.8)
