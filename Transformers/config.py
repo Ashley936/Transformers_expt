@@ -4,7 +4,7 @@ def get_config():
     return {
         "batch_size": 8, # 24 for google collab  steps -> 1200
         "num_epochs": 20,
-        "lr": 10**-4, # usually we take large lr and the reduce it overtime
+        "lr": 1e-3, # usually we take large lr and the reduce it overtime
         "warmup_steps": 1000, # 300 for collab
         "save_weights": True,
         "seq_len": 350,

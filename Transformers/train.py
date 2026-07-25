@@ -127,6 +127,31 @@ def get_model(config, src_vocab_size, tgt_vocab_size):
 def rate(step, warmup):
     return min(1.0, (step+1)/warmup) # for warmup 0 -> lr then stays lr
 
+# FOR ABLATION
+ACT = {"on": False, "val": {}}
+def layer_grad_norms(model):
+    stats = {}
+    for tag, layers in (("enc", model.encoder.layers), "dec", model.decoder.layers):
+        for i, layer in enumerate(layers):
+            sq = 0.0
+            for p in layers.parameters():
+                if p.grad is not None:
+                    sq += p.grad().detach().float().pow(2).sum().item()
+            stats[f"{tag}{i}"] = sq ** 0.5
+    return stats
+
+def register_act_hooks(model: nn.Transformer):
+    def make_hooks(name):
+        def hook(mod, inp, out):
+            if ACT["on"]:
+                ACT['val'][name] = out.detach().float().std().item()
+        return hook
+
+    for i, layer in enumerate(model.encoder.layers):
+        layer.register_forward_hook(make_hooks(f"enc{i}"))
+
+    for i, layer in enumerate(model.decoder.layers):
+        layer.register_forward_hook(make_hooks(f"dec{i}"))    
 
 def train(config, train_dataloader=None, val_dataloader=None, tokenizer_src=None, tokenizer_tgt=None):
     # define device
@@ -140,6 +165,8 @@ def train(config, train_dataloader=None, val_dataloader=None, tokenizer_src=None
 
     set_seed(config.get('seed', 42))
     model=get_model(config, tokenizer_src.get_vocab_size(), tokenizer_tgt.get_vocab_size()).to(device)
+    # FOR ABLATION
+    register_act_hooks(model)
 
     # Create Tensorboard
     writer=SummaryWriter(config['experiment_name'])
@@ -203,8 +230,11 @@ def train(config, train_dataloader=None, val_dataloader=None, tokenizer_src=None
             decoder_input = batch['dec_input'].to(device) # (B, seq_len)
             encoder_mask = batch['enc_mask'].to(device) # (B, 1, 1, seq_len)
             decoder_mask = batch['dec_mask'].to(device) # (B, 1, seq_len, seq_len)
+            # FOR ABLATION
+            log_layers = (global_step % 50 == 0)
+            ACT["on"] = log_layers
 
-            # Run the tensors through the transformer
+            # Run the forward pass through the transformer
             encoder_output=model.encode(encoder_input, encoder_mask) #(B, seq_len, d_model)
             decoder_output=model.decode(decoder_input, encoder_output, encoder_mask, decoder_mask) #(B, seq_len, d_model)
             proj_out = model.project(decoder_output) # (B, seq_len, tgt_vocab_size)
@@ -238,6 +268,16 @@ def train(config, train_dataloader=None, val_dataloader=None, tokenizer_src=None
                 history["diverged_at_step"] = global_step
                 break
 
+            if log_layers:
+                gn = layer_grad_norms(model)
+
+                for k, v in gn.items():
+                    writer.add_scalar(f"grad_norm_layer/{k}", v, global_step)
+                for k, v in ACT["vals"].items():
+                    writer.add_scalar(f"act_std_layer/{k}", v, global_step)
+                history["train"][-1]["layer_grad_norms"] = gn
+                history["train"][-1]["layer_act_stds"] = dict(ACT["vals"])
+                
             #update the weights
             optimizer.step()
             optimizer.zero_grad(set_to_none=True)  # prevents the system from doing unnecessary memory allocations for zeros, marginally speeding up training loop
