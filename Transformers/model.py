@@ -48,16 +48,16 @@ class PositionalEncoding(nn.Module):
 
 
 class LayerNormalisation(nn.Module):
-    def __init__(self, eps: float = 10**-6):
+    def __init__(self, d_model: int, eps: float = 10**-6):
         super().__init__()
         self.eps = eps
-        self.alpha = nn.Parameter(torch.ones(1)) # Multiplied
-        self.beta = nn.Parameter(torch.zeros(1)) # Added
+        self.alpha = nn.Parameter(torch.ones(d_model)) # Multiplied
+        self.beta = nn.Parameter(torch.zeros(d_model)) # Added
 
     def forward(self, x: Tensor):
         mu = x.mean(-1, keepdim=True)
-        std = x.std(-1, keepdim=True)
-        return self.alpha*(x-mu)/(std+self.eps) + self.beta
+        var = x.var(-1, unbiased= False, keepdim=True)
+        return self.alpha*(x-mu)/ torch.sqrt(var+self.eps) + self.beta
 
 class FeedForwardBlock(nn.Module):
     '''
@@ -174,10 +174,10 @@ If we initialize layer inside encoder : Every layer shares the same hyperparamet
 This dependency injection approach provides extreme flexibility
 '''
 class Encoder(nn.Module):
-    def __init__(self, layers: nn.ModuleList):
+    def __init__(self, layers: nn.ModuleList, d_model: int=512):
         super().__init__()
         self.layers=layers
-        self.norm=LayerNormalisation()
+        self.norm=LayerNormalisation(d_model)
     
     def forward(self, x: Tensor, mask: Tensor=None):
         for layer in self.layers:
@@ -202,10 +202,10 @@ class DecoderBlock(nn.Module):
         return x
     
 class Decoder(nn.Module):
-    def __init__(self, layers: nn.ModuleList):
+    def __init__(self, layers: nn.ModuleList, d_model: int=512):
         super().__init__()
         self.layers=layers
-        self.norm=LayerNormalisation()
+        self.norm=LayerNormalisation(d_model)
     
     def forward(self, x: Tensor, enc_out: Tensor, src_mask: Tensor, tgt_mask: Tensor):
         for layer in self.layers:

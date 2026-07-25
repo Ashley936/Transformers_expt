@@ -16,6 +16,10 @@ class BillingualDataset(Dataset):
         self.sos_token=torch.tensor([tokenizer_src.token_to_id("[sos]")], dtype=torch.int64)
         self.eos_token=torch.tensor([tokenizer_src.token_to_id("[eos]")], dtype=torch.int64)
         self.pad_token=torch.tensor([tokenizer_src.token_to_id("[pad]")], dtype=torch.int64)
+        
+        assert all(tokenizer_src.token_to_id(t) == tokenizer_tgt.token_to_id(t)
+            for t in ["[sos]", "[eos]", "[pad]"]), \
+        "src/tgt special-token IDs differ; dataset assumes they match"
 
     def __len__(self):
         return len(self.ds)
