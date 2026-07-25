@@ -58,7 +58,8 @@ GRID = [
 # Split 2+2, keeping one Pre-LN and one Post-LN cell per GPU rather than
 # splitting by norm_type or schedule - so a GPU-specific quirk (thermal
 # throttling, driver issue) doesn't confound one whole axis of the ablation.
-GRID_HALVES = [GRID[0::2], GRID[1::2]]  # [[pre/flat, post/flat], [pre/warmup, post/warmup]]
+GRID_HALVES = [[GRID[0], GRID[3]],   # pre/flat, post/warmup
+               [GRID[1], GRID[2]]]   # pre/warmup, post/flat
 
 
 # ---------------------------------------------------------------------------
@@ -207,8 +208,8 @@ if __name__ == "__main__":
         axes[0, 1].set_xlabel("step"); axes[0, 1].set_ylabel("grad norm"); axes[0, 1].legend()
         axes[0, 1].set_yscale("log")
 
-        axes[1, 0].set_title("Validation BLEU")
-        axes[1, 0].set_xlabel("step"); axes[1, 0].set_ylabel("BLEU"); axes[1, 0].legend()
+        axes[1, 0].set_title("Validation Loss")
+        axes[1, 0].set_xlabel("step"); axes[1, 0].set_ylabel("Loss"); axes[1, 0].legend()
 
         axes[1, 1].axis("off")
         summary_lines = ["Stability summary (grad-norm std/mean, 2nd half of training):"]

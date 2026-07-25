@@ -84,10 +84,6 @@ def get_ds(config):
     tokenizer_src=get_or_build_tokenizer(config, ds_raw, config["lang_src"])
     tokenizer_tgt=get_or_build_tokenizer(config, ds_raw, config["lang_tgt"])
 
-    # Train and test split 9:1
-    train_ds_size = int(0.9*len(ds_raw))
-    val_ds_size = len(ds_raw)-train_ds_size
-
     # Now we check the max length of src or tgt lang in dataset to find the optimal seq len
 
     max_src_len=0
@@ -101,6 +97,10 @@ def get_ds(config):
             kept.append(item)
     print(f"Max src {max_src_len}, max tgt {max_tgt_len}; kept {len(kept)}/{len(ds_raw)}")
     ds_raw = kept
+
+    # Train and test split 9:1
+    train_ds_size = int(0.9*len(ds_raw))
+    val_ds_size = len(ds_raw)-train_ds_size
 
     '''initialize a custom generator'''
     seed=config['seed']
