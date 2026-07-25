@@ -92,16 +92,15 @@ def get_ds(config):
 
     max_src_len=0
     max_tgt_len=0
-
+    kept = []
     for item in ds_raw:
-        src_ids=tokenizer_src.encode(item["translation"][config["lang_src"]])
-        tgt_ids=tokenizer_tgt.encode(item["translation"][config["lang_tgt"]])
-        max_src_len=max(max_src_len, len(src_ids))
-        max_tgt_len=max(max_tgt_len, len(tgt_ids))
-        # need to change Valuerror (will do it later)
-    
-    print(f"Max length of source sequence: {max_src_len}")
-    print(f"Max length of target sequence: {max_tgt_len}")
+        s = len(tokenizer_src.encode(item["translation"][config["lang_src"]]).ids)
+        t = len(tokenizer_tgt.encode(item["translation"][config["lang_tgt"]]).ids)
+        max_src_len, max_tgt_len = max(max_src_len, s), max(max_tgt_len, t)
+        if s <= config["seq_len"] - 2 and t <= config["seq_len"] - 1:
+            kept.append(item)
+    print(f"Max src {max_src_len}, max tgt {max_tgt_len}; kept {len(kept)}/{len(ds_raw)}")
+    ds_raw = kept
 
     '''initialize a custom generator'''
     seed=config['seed']
@@ -339,12 +338,12 @@ def train(config, train_dataloader=None, val_dataloader=None, tokenizer_src=None
             
             # Save model at each epoch
             model_filename = get_weights_file_path(config, epoch)
-            torch.save({
+            """ torch.save({
                 'epoch': epoch, 
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'global_step': global_step
-            }, model_filename)
+            }, model_filename) """
     finally:
         with open(history_path, "w") as f:
             json.dump(history, f, indent=2)

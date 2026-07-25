@@ -114,7 +114,7 @@ def run_worker(gpu_id, cells, base_config_dict):
                 tokenizer_tgt=tokenizer_tgt,
             )
             result["status"] = "completed"
-            print(f"[GPU {gpu_id}] RUN {run_name} completed. Best BLEU: {result['best_bleu']:.3f}, "
+            print(f"[GPU {gpu_id}] RUN {run_name} completed. "
                   f"checkpoint: {result['best_checkpoint_path']}")
         except Exception as e:
             print(f"[GPU {gpu_id}] RUN {run_name} FAILED: {e}")
@@ -222,7 +222,7 @@ if __name__ == "__main__":
                 mean_gn = sum(half) / len(half)
                 std_gn = (sum((x - mean_gn) ** 2 for x in half) / len(half)) ** 0.5
                 cv = std_gn / mean_gn if mean_gn else float("nan")
-                summary_lines.append(f"  {run_name}: mean={mean_gn:.2f}  cv={cv:.3f}  best_bleu={result['best_bleu']:.3f}")
+                summary_lines.append(f"  {run_name}: mean={mean_gn:.2f}  cv={cv:.3f}")
         axes[1, 1].text(0, 1, "\n".join(summary_lines), va="top", family="monospace", fontsize=9)
 
         plt.tight_layout()
